@@ -1,12 +1,17 @@
 import secrets
+import jwt
 from flask import Flask, request, g
 from flask_restx import Api, Resource, fields # type: ignore
 from functools import wraps
 from .db import get_connection, init_db
+from datetime import datetime, timedelta
 import logging
 
 # Define a simple in-memory token store
 tokens = {}
+
+#Definir la clave secreta del token JWT
+SECRET_KEY = "M1S3CR3Tk4y4JwT0K3nByGr01Ptw0"
 
 #log = logging.getLogger(__name__)
 logging.basicConfig(
@@ -19,15 +24,16 @@ logging.basicConfig(
      datefmt="%Y-%m-%d %H:%M",
 )
 
-# Configure Swagger security scheme for Bearer tokens
+
 authorizations = {
     'Bearer': {
         'type': 'apiKey',
         'in': 'header',
         'name': 'Authorization',
-        'description': "Enter your token in the format **Bearer <token>**"
+        'description': 'Token JWT en el formato: Bearer {jwt-token}'
     }
 }
+
 
 app = Flask(__name__)
 api = Api(
@@ -35,10 +41,11 @@ api = Api(
     version='1.0',
     title='Core Bancario API',
     description='API para operaciones bancarias, incluyendo autenticación y operaciones de cuenta.',
-    doc='/swagger',  # Swagger UI endpoint
+    doc='/swagger',  # Endpoint de Swagger UI
     authorizations=authorizations,
-    security='Bearer'
+    security='Bearer'  # Requiere el token Bearer por defecto en todas las rutas
 )
+
 
 # Create namespaces for authentication and bank operations
 auth_ns = api.namespace('auth', description='Operaciones de autenticación')
@@ -86,10 +93,21 @@ class Login(Resource):
         
         conn = get_connection()
         cur = conn.cursor()
-        cur.execute("SELECT id, username, password, role, full_name, email FROM bank.users WHERE username = %s", (username,))
+        cur.execute("SELECT id, username, password, role, full_name, email FROM bank.users WHERE username = %s AND password = %s", (username,password))
         user = cur.fetchone()
         if user and user[2] == password:
-            token = secrets.token_hex(16)
+            #token = secrets.token_hex(16)
+            # Generar el token JWT
+            issued_at = int(datetime.now().timestamp())
+            expiration = datetime.now() + timedelta(hours=1)
+            expiration_timestamp = int(expiration.timestamp())  
+
+            token = jwt.encode({
+                "sub": str(user[0]),  # ID del usuario
+                "iat": issued_at,  # Fecha de emisión 
+                "exp": expiration_timestamp  # Fecha de expiración 
+            }, SECRET_KEY, algorithm="HS256")
+
             # Persist the token in the database
             cur.execute("INSERT INTO bank.tokens (token, user_id) VALUES (%s, %s)", (token, user[0]))
             conn.commit()
@@ -104,6 +122,7 @@ class Login(Resource):
 @auth_ns.route('/logout')
 class Logout(Resource):
     @auth_ns.doc('logout')
+    @bank_ns.doc(security='Bearer')
     def post(self):
         """Invalida el token de autenticación."""
         auth_header = request.headers.get("Authorization", "")
@@ -133,27 +152,36 @@ def token_required(f):
             api.abort(401, "Authorization header missing or invalid")
         token = auth_header.split(" ")[1]
         logging.debug("Token: "+str(token))
-        conn = get_connection()
-        cur = conn.cursor()
-        # Query the token in the database and join with users table to retrieve user info
-        cur.execute("""
+
+        try:
+            # Verificar y decodificar el JWT
+            decoded_token = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+            user_id = int(decoded_token["sub"])  # ID del usuario desde el token
+            conn = get_connection()
+            cur = conn.cursor()
+            cur.execute("""
             SELECT u.id, u.username, u.role, u.full_name, u.email 
             FROM bank.tokens t
             JOIN bank.users u ON t.user_id = u.id
             WHERE t.token = %s
-        """, (token,))
-        user = cur.fetchone()
-        cur.close()
-        conn.close()
-        if not user:
-            api.abort(401, "Invalid or expired token")
-        g.user = {
-            "id": user[0],
-            "username": user[1],
-            "role": user[2],
-            "full_name": user[3],
-            "email": user[4]
-        }
+            """, (token,))
+            user = cur.fetchone()
+            if not user:
+                api.abort(401, "Token revoked")
+            g.user = {
+                "id": user[0],
+                "username": user[1],
+                "role": user[2],
+                "full_name": user[3],
+                "email": user[4]
+            } 
+            cur.close()
+            conn.close()
+        except jwt.ExpiredSignatureError:
+            api.abort(401, "Token has expired")
+        except jwt.InvalidTokenError:
+            api.abort(401, "Invalid token")    
+
         return f(*args, **kwargs)
     return decorated
 
@@ -163,6 +191,7 @@ def token_required(f):
 class Deposit(Resource):
     logging.debug("Entering....")
     @bank_ns.expect(deposit_model, validate=True)
+    @bank_ns.doc(security='Bearer')
     @bank_ns.doc('deposit')
     @token_required
     def post(self):
@@ -199,6 +228,7 @@ class Deposit(Resource):
 @bank_ns.route('/withdraw')
 class Withdraw(Resource):
     @bank_ns.expect(withdraw_model, validate=True)
+    @bank_ns.doc(security='Bearer')
     @bank_ns.doc('withdraw')
     @token_required
     def post(self):
@@ -231,6 +261,7 @@ class Withdraw(Resource):
 @bank_ns.route('/transfer')
 class Transfer(Resource):
     @bank_ns.expect(transfer_model, validate=True)
+    @bank_ns.doc(security='Bearer')
     @bank_ns.doc('transfer')
     @token_required
     def post(self):
@@ -282,6 +313,7 @@ class Transfer(Resource):
 @bank_ns.route('/credit-payment')
 class CreditPayment(Resource):
     @bank_ns.expect(credit_payment_model, validate=True)
+    @bank_ns.doc(security='Bearer')
     @bank_ns.doc('credit_payment')
     @token_required
     def post(self):
@@ -332,6 +364,7 @@ class CreditPayment(Resource):
 @bank_ns.route('/pay-credit-balance')
 class PayCreditBalance(Resource):
     @bank_ns.expect(pay_credit_balance_model, validate=True)
+    @bank_ns.doc(security='Bearer')
     @bank_ns.doc('pay_credit_balance')
     @token_required
     def post(self):
