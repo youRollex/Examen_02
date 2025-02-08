@@ -2,7 +2,7 @@ import os
 import re
 from datetime import datetime
 
-class Logger:
+class CustomLogger:
     def __init__(self, log_file='application.log'):
         # Inicializa el logger y crea el archivo de logs si no existe.
         self.log_file = log_file
@@ -13,7 +13,6 @@ class Logger:
                 pass
 
     def log(self, log_type, ip_address, username, message, http_code):
-
         # Valida los parámetros de entrada antes de escribir en el log.
         valid_log_types = {'INFO', 'DEBUG', 'WARNING', 'ERROR'}
 
@@ -31,7 +30,17 @@ class Logger:
 
         if not isinstance(http_code, int) or not (100 <= http_code <= 599):
             raise ValueError(f"Código HTTP inválido: {http_code}")
-        
+
+        # Enmascara los datos sensibles antes de escribir en el log.
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        masked_ip, masked_username = self.mask_sensitive_data(ip_address, username)
+
+        # Estructura del Log
+        log_message = f"{timestamp} | {log_type} | {masked_ip} | {masked_username} | {message} | {http_code}\n"
+
+        with open(self.log_file, 'a') as f:
+            f.write(log_message)
+
     def validate_ip(self, ip):
         # Valida si la dirección IP tiene un formato correcto.
         pattern = r'^((25[0-5]|2[0-4][0-9]|1?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|1?[0-9][0-9]?)$'
@@ -42,19 +51,6 @@ class Logger:
         masked_ip = '.'.join(ip_address.split('.')[:2]) + ".***.***"
         masked_username = username[0] + "***" + username[-1] if len(username) > 2 else "***"
         return masked_ip, masked_username
-
-    def log(self, log_type, ip_address, username, message, http_code):
-        # Registra un mensaje en el log después de validar y enmascarar datos sensibles.
-        self.validate_input(log_type, ip_address, username, message, http_code)
-
-        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
-        masked_ip, masked_username = self.mask_sensitive_data(ip_address, username)
-
-        # Estructura del Log
-        log_message = f"{timestamp} | {log_type} | {masked_ip} | {masked_username} | {message} | {http_code}\n"
-
-        with open(self.log_file, 'a') as f:
-            f.write(log_message)
 
     # Métodos helper para registrar mensajes con diferentes niveles de severidad
     def info(self, ip_address, username, message, http_code):
