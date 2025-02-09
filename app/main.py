@@ -206,54 +206,59 @@ class Logout(Resource):
         return {"message": "Logout successful"}, 200
 
 
-@app.route('/change-password', methods=['POST'])
-def change_password():
-    # Validación del header de autorización
-    auth_header = request.headers.get("Authorization", "")
-    if not auth_header.startswith("Bearer "):
-        return jsonify({"message": "Authorization header missing or invalid"}), 401
+@auth_ns.route('/change-password', methods=['POST'])
+class ChangePassword(Resource):
+    @auth_ns.doc('change-password')
+    @bank_ns.doc(security='Bearer')
+    def post(self):
+        """Cambia la contraseña del usuario autenticado."""
+        auth_header = request.headers.get("Authorization", "")
+        
+        # Validación del header de autorización
+        if not auth_header.startswith("Bearer "):
+            return jsonify({"message": "Authorization header missing or invalid"}), 401
 
-    # Decodificar el token JWT
-    token = auth_header.split(" ")[1]
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-        user_id = payload['sub']
-    except jwt.ExpiredSignatureError:
-        return jsonify({"message": "Token has expired"}), 401
-    except jwt.InvalidTokenError:
-        return jsonify({"message": "Invalid token"}), 401
+        # Decodificar el token JWT
+        token = auth_header.split(" ")[1]
+        try:
+            payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+            user_id = payload['sub']
+        except jwt.ExpiredSignatureError:
+            return jsonify({"message": "Token has expired"}), 401
+        except jwt.InvalidTokenError:
+            return jsonify({"message": "Invalid token"}), 401
 
-    # Obtener la nueva contraseña desde el cuerpo de la solicitud
-    new_password = request.json.get("new_password")
-    
-    # Validar si la nueva contraseña cumple con los requisitos de seguridad
-    if not is_strong_password(new_password):
-        return jsonify({"message": "Password does not meet security requirements"}), 400
+        # Obtener la nueva contraseña desde el cuerpo de la solicitud
+        new_password = request.json.get("new_password")
+        
+        # Validar si la nueva contraseña cumple con los requisitos de seguridad
+        if not is_strong_password(new_password):
+            return jsonify({"message": "Password does not meet security requirements"}), 400
 
-    try:
-        # Conectar a la base de datos
-        conn = psycopg2.connect(dsn)
-        cur = conn.cursor()
+        try:
+            # Conectar a la base de datos
+            conn = psycopg2.connect(dsn)
+            cur = conn.cursor()
 
-        # Hashear la nueva contraseña
-        hashed_password = bcrypt.hashpw(new_password.encode('utf-8'), bcrypt.gensalt())
+            # Hashear la nueva contraseña
+            hashed_password = bcrypt.hashpw(new_password.encode('utf-8'), bcrypt.gensalt())
 
-        # Actualizar la contraseña en la base de datos y registrar la fecha de cambio
-        cur.execute("""
-            UPDATE bank.users
-            SET password = %s, password_changed_at = NOW()
-            WHERE id = %s
-        """, (hashed_password, user_id))
+            # Actualizar la contraseña en la base de datos y registrar la fecha de cambio
+            cur.execute("""
+                UPDATE bank.users
+                SET password = %s, password_changed_at = NOW()
+                WHERE id = %s
+            """, (hashed_password, user_id))
 
-        conn.commit()  # Guardar los cambios
-        cur.close()
-        conn.close()
+            conn.commit()  # Guardar los cambios
+            cur.close()
+            conn.close()
 
-        return jsonify({"message": "Password changed successfully"}), 200
+            return jsonify({"message": "Password changed successfully"}), 200
 
-    except Exception as e:
-        print(f"Error al cambiar la contraseña: {e}")
-        return jsonify({"message": "An error occurred while changing the password"}), 500
+        except Exception as e:
+            print(f"Error al cambiar la contraseña: {e}")
+            return jsonify({"message": "An error occurred while changing the password"}), 500
 # ---------------- Token-Required Decorator ----------------
 
 def token_required(f):
