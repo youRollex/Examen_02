@@ -5,15 +5,10 @@ from flask_restx import Api, Resource, fields # type: ignore
 from functools import wraps
 from .db import get_connection, init_db
 from datetime import datetime, timedelta
-<<<<<<< HEAD
 import logging
 import os
 import bcrypt
-
-
-=======
 from app.custom_logger import CustomLogger
->>>>>>> 30d0bc3e346b03d43e5ee74fe9fb8d4fd642f73f
 
 # Define a simple in-memory token store
 tokens = {}
