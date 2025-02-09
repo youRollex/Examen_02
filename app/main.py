@@ -1,11 +1,15 @@
 import secrets
 import jwt
-from flask import Flask, request, g
+from flask import Flask, request, g, jsonify
 from flask_restx import Api, Resource, fields # type: ignore
 from functools import wraps
 from .db import get_connection, init_db
 from datetime import datetime, timedelta
 import logging
+import os
+import bcrypt
+
+
 
 # Define a simple in-memory token store
 tokens = {}
@@ -79,8 +83,63 @@ pay_credit_balance_model = bank_ns.model('PayCreditBalance', {
     'amount': fields.Float(required=True, description='Monto a abonar a la deuda de la tarjeta', example=50)
 })
 
-# ---------------- Authentication Endpoints ----------------
 
+# ---------------- Authentication Endpoints ----------------
+import re
+
+DB_HOST = os.environ.get('POSTGRES_HOST', 'db')
+DB_PORT = os.environ.get('POSTGRES_PORT', '5432')
+DB_NAME = os.environ.get('POSTGRES_DB', 'corebank')
+DB_USER = os.environ.get('POSTGRES_USER', 'postgres')
+DB_PASSWORD = os.environ.get('POSTGRES_PASSWORD', 'postgres')
+
+# Inicializa la variable dsn
+dsn = f"dbname={DB_NAME} user={DB_USER} password={DB_PASSWORD} host={DB_HOST} port={DB_PORT}"
+
+def is_strong_password(password):
+    """Valida que la contraseña sea robusta"""
+    if len(password) < 8:
+        return False
+    if not re.search(r'[A-Z]', password):  # Al menos una mayúscula
+        return False
+    if not re.search(r'[a-z]', password):  # Al menos una minúscula
+        return False
+    if not re.search(r'[0-9]', password):  # Al menos un número
+        return False
+    if not re.search(r'[@$!%*?&]', password):  # Al menos un carácter especial
+        return False
+    return True
+
+import psycopg2
+
+def is_password_expired(user_id):
+    conn = psycopg2.connect(dsn)  # Usa tu configuración de base de datos aquí
+    cur = conn.cursor()
+    cur.execute("SELECT password_changed_at FROM bank.users WHERE id = %s", (user_id,))
+    result = cur.fetchone()
+    cur.close()
+    conn.close()
+
+    if result:
+        last_changed = result[0]
+        # Asumiendo que la contraseña caduca en 90 días
+        expiration_date = last_changed + timedelta(days=90)
+        return datetime.now() > expiration_date
+    return False
+
+def password_expiration_warning(user_id):
+    conn = psycopg2.connect(dsn)
+    cur = conn.cursor()
+    cur.execute("SELECT password_changed_at FROM bank.users WHERE id = %s", (user_id,))
+    result = cur.fetchone()
+    cur.close()
+    conn.close()
+
+    if result:
+        last_changed = result[0]
+        expiration_date = last_changed + timedelta(days=60)  # Advertencia 30 días antes de la caducidad
+        return datetime.now() > expiration_date and datetime.now() < expiration_date + timedelta(days=30)
+    return False
 @auth_ns.route('/login')
 class Login(Resource):
     @auth_ns.expect(login_model, validate=True)
@@ -108,12 +167,19 @@ class Login(Resource):
                 "exp": expiration_timestamp  # Fecha de expiración 
             }, SECRET_KEY, algorithm="HS256")
 
+            # Verificación de la expiración de la contraseña
+            message = "Login successful"
+            if is_password_expired(user[0]):
+                message = "Your password has expired. Please change it."
+            elif password_expiration_warning(user[0]):
+                message = "Your password is about to expire. Please change it soon."
+
             # Persist the token in the database
             cur.execute("INSERT INTO bank.tokens (token, user_id) VALUES (%s, %s)", (token, user[0]))
             conn.commit()
             cur.close()
             conn.close()
-            return {"message": "Login successful", "token": token}, 200
+            return {"message": message, "token": token}, 200
         else:
             cur.close()
             conn.close()
@@ -142,6 +208,55 @@ class Logout(Resource):
         conn.close()
         return {"message": "Logout successful"}, 200
 
+
+@app.route('/change-password', methods=['POST'])
+def change_password():
+    # Validación del header de autorización
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return jsonify({"message": "Authorization header missing or invalid"}), 401
+
+    # Decodificar el token JWT
+    token = auth_header.split(" ")[1]
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+        user_id = payload['sub']
+    except jwt.ExpiredSignatureError:
+        return jsonify({"message": "Token has expired"}), 401
+    except jwt.InvalidTokenError:
+        return jsonify({"message": "Invalid token"}), 401
+
+    # Obtener la nueva contraseña desde el cuerpo de la solicitud
+    new_password = request.json.get("new_password")
+    
+    # Validar si la nueva contraseña cumple con los requisitos de seguridad
+    if not is_strong_password(new_password):
+        return jsonify({"message": "Password does not meet security requirements"}), 400
+
+    try:
+        # Conectar a la base de datos
+        conn = psycopg2.connect(dsn)
+        cur = conn.cursor()
+
+        # Hashear la nueva contraseña
+        hashed_password = bcrypt.hashpw(new_password.encode('utf-8'), bcrypt.gensalt())
+
+        # Actualizar la contraseña en la base de datos y registrar la fecha de cambio
+        cur.execute("""
+            UPDATE bank.users
+            SET password = %s, password_changed_at = NOW()
+            WHERE id = %s
+        """, (hashed_password, user_id))
+
+        conn.commit()  # Guardar los cambios
+        cur.close()
+        conn.close()
+
+        return jsonify({"message": "Password changed successfully"}), 200
+
+    except Exception as e:
+        print(f"Error al cambiar la contraseña: {e}")
+        return jsonify({"message": "An error occurred while changing the password"}), 500
 # ---------------- Token-Required Decorator ----------------
 
 def token_required(f):
