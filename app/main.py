@@ -176,12 +176,8 @@ class Login(Resource):
             conn.commit()
             cur.close()
             conn.close()
-<<<<<<< HEAD
             return {"message": message, "token": token}, 200
-=======
-            logger.info(ip_address, username, "Login successful", 200)
-            return {"message": "Login successful", "token": token}, 200
->>>>>>> 30d0bc3e346b03d43e5ee74fe9fb8d4fd642f73f
+            
         else:
             cur.close()
             conn.close()
